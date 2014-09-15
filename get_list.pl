@@ -14,7 +14,7 @@ use feature 'say';
 
 my $ua = Mojo::UserAgent->new;
 $ua->max_connections(20);
-#$ua->proxy->http('http://192.168.103.97:3128');
+$ua->proxy->http('http://192.168.1.197:3128', 'http://192.168.1.101:3128');
 my $threads = 1;
 my @pids;
 my $headers = {
@@ -30,7 +30,7 @@ my $json = Mojo::JSON->new;
 my $redis = Redis->new(
   server=>'127.0.0.1:6379',reconnect => 60,read_timeout => 0.5
 );
-my $now = time;
+
 my %exists_no;
 my $pubtask = "publicno-task";
 my $urltask = "url-task";
@@ -43,12 +43,13 @@ foreach(1..$threads) {
          $info = $json->decode($info);
          my $openid = $info->{-openid};
          $headers->{'Referer'} .= "&openid=$openid";
-         my $api = "$xml_url?openid=$openid&t=".time;
+         my $api = "$xml_url&openid=$openid&t=".time * 1000;
          DEBUG && say $api;
-         my $info->{-url} = geturl($ua, $api, []);
+         my $article_url = geturl($ua, $api, []);
+         next unless scalar @$article_url > 0;
+         $info->{-url} = $article_url;
          DEBUG && say Dumper $info;
-         #$redis->lpush($urltask, $json->encode($info));
-         last;
+         $redis->lpush($urltask, $json->encode($info));
       }
    }
 
@@ -59,7 +60,6 @@ foreach(@pids) {
 }
 
 sub geturl {
-   my $time = time;
    my ($ua, $url, $links) = @_;
    my $tx = $ua->get($url=>$headers=>)->res;
    my $body = $tx->body;
@@ -74,11 +74,13 @@ sub geturl {
    foreach my $item(@$items) {
       $item =~ s/[^[:ascii:]]+//g;
       my $xml = XMLin($item);
-      return $links if $time - int($xml->{'item'}->{'display'}->{'lastModified'}) > 30 * 86400;
+      return $links if scalar @$links > 30;
       push @$links, $xml->{'item'}->{'display'}->{'url'};
    }
    foreach my $page(2..$totalPages) {
-      my $p_url = "$url&page=$page&t=".time;
+      my $p_url = "$url&page=$page&t=".time*1000;
+      return $links if scalar @$links > 30;
       return geturl($ua, $p_url, $links);
    }
+   return $links;
 }
